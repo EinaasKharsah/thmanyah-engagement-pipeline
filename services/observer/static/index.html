@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Engagement Pipeline — Live Overview</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <h1>Engagement Pipeline — Live Overview</h1>
+
+  <div class="metrics">
+    <div class="metric">
+      <div class="metric-label">ClickHouse Events</div>
+      <div class="metric-value" id="clickhouse-count">—</div>
+      <div class="metric-description">Total enriched events written to analytics store</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Redis Buckets</div>
+      <div class="metric-value" id="redis-buckets">—</div>
+      <div class="metric-description">Active minute buckets used for last-10-minutes aggregation</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2 class="section-title">Pipeline Flow</h2>
+    <p class="pipeline-description">A real-time fan-out pipeline enriching engagement events and serving analytics, live ranking, and external integrations.</p>
+    <div class="pipeline-diagram">
+      <div class="pipeline-stage">
+        <div class="pipeline-box">Postgres</div>
+      </div>
+      <div class="pipeline-arrow">→</div>
+      <div class="pipeline-stage">
+        <div class="pipeline-box">Kafka</div>
+      </div>
+      <div class="pipeline-arrow">→</div>
+      <div class="pipeline-stage">
+        <div class="pipeline-box">Processor</div>
+      </div>
+      <div class="pipeline-fanout">
+        <div class="pipeline-sink">
+          <div class="pipeline-arrow-down">↓</div>
+          <div class="pipeline-box sink">ClickHouse</div>
+        </div>
+        <div class="pipeline-sink">
+          <div class="pipeline-arrow-down">↓</div>
+          <div class="pipeline-box sink">Redis</div>
+        </div>
+        <div class="pipeline-sink">
+          <div class="pipeline-arrow-down">↓</div>
+          <div class="pipeline-box sink">External API</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2 class="section-title">
+      <span class="status-indicator"></span>
+      Top Content (Last 10 Minutes)
+    </h2>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Content ID</th>
+            <th>Score</th>
+          </tr>
+        </thead>
+        <tbody id="top-content-body">
+          <tr>
+            <td colspan="3" style="text-align: center; padding: 2rem; color: #999;">
+              Loading...
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div class="footer-timestamp">
+      Last updated: <span id="last-updated">—</span> UTC (auto-refresh every 5s)
+    </div>
+  </div>
+
+  <script>
+    async function fetchStatus() {
+      try {
+        const resp = await fetch('/status');
+        const data = await resp.json();
+        
+        // Update metrics
+        document.getElementById('clickhouse-count').textContent = 
+          data.clickhouse_count.toLocaleString();
+        document.getElementById('redis-buckets').textContent = 
+          data.redis_bucket_keys.length;
+        
+        // Update timestamp
+        const now = new Date();
+        const hours = String(now.getUTCHours()).padStart(2, '0');
+        const minutes = String(now.getUTCMinutes()).padStart(2, '0');
+        document.getElementById('last-updated').textContent = `${hours}:${minutes}`;
+        
+        // Update top content table
+        const tbody = document.getElementById('top-content-body');
+        if (data.latest_top_content.length === 0) {
+          tbody.innerHTML = `
+            <tr>
+              <td colspan="3" style="text-align: center; padding: 2rem; color: #999;">
+                No data yet
+              </td>
+            </tr>
+          `;
+        } else {
+          tbody.innerHTML = data.latest_top_content.map((item, idx) => `
+            <tr>
+              <td>${idx + 1}</td>
+              <td class="content-id">${item.content_id}</td>
+              <td class="score">${item.score.toLocaleString()}</td>
+            </tr>
+          `).join('');
+        }
+      } catch (err) {
+        console.error('Failed to fetch status:', err);
+      }
+    }
+
+    // Initial load
+    fetchStatus();
+
+    // Auto-refresh every 5 seconds
+    setInterval(fetchStatus, 5000);
+  </script>
+</body>
+</html>
+

@@ -1,0 +1,175 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    environment:
+      - ZOOKEEPER_CLIENT_PORT=2181
+      - ZOOKEEPER_TICK_TIME=2000
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgres:
+    image: postgres:15
+    environment:
+      - POSTGRES_USER=eng
+      - POSTGRES_PASSWORD=eng
+      - POSTGRES_DB=engagement
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eng"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    environment:
+      - CLICKHOUSE_DB=analytics
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  external_api:
+    build:
+      context: ./services/external_api
+    environment:
+      - UVICORN_PORT=8000
+    depends_on:
+      - kafka
+    ports:
+      - "8000:8000"
+
+  generator:
+    build:
+      context: ./services/generator
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=engagement
+      - PG_USER=eng
+      - PG_PASSWORD=eng
+    command: ["python", "generator.py"]
+
+  publisher:
+    build:
+      context: ./services/publisher
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=engagement
+      - PG_USER=eng
+      - PG_PASSWORD=eng
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    command: ["python", "publisher.py"]
+
+  processor:
+    build:
+      context: ./services/processor
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      clickhouse:
+        condition: service_healthy
+      external_api:
+        condition: service_started
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=engagement
+      - PG_USER=eng
+      - PG_PASSWORD=eng
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=9000
+      - CLICKHOUSE_DB=analytics
+      - EXTERNAL_API_URL=http://external_api:8000/ingest
+    command: ["faust", "-A", "faust_app:app", "worker", "-l", "info"]
+
+  backfill:
+    build:
+      context: ./scripts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=engagement
+      - PG_USER=eng
+      - PG_PASSWORD=eng
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    command: ["sleep", "infinity"]
+
+  observer:
+    build:
+      context: ./services/observer
+    depends_on:
+      redis:
+        condition: service_started
+      clickhouse:
+        condition: service_healthy
+    environment:
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    ports:
+      - "8080:8080"
+
+
